@@ -1,6 +1,4 @@
-export { KiroOAuthPlugin } from './plugin.js'
-
+export { authorizeKiroIDC } from './kiro/oauth-idc.js'
+export { buildModelRegistry, default } from './plugin.js'
 export type { KiroConfig } from './plugin/config/index.js'
-export type { KiroAuthMethod, KiroRegion, ManagedAccount } from './plugin/types.js'
-
-export default { id: 'kiro', server: (await import('./plugin.js')).KiroOAuthPlugin }
+export type { KiroAuthDetails, KiroAuthMethod, KiroRegion, ManagedAccount } from './plugin/types.js'

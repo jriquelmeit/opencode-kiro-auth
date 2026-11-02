@@ -5,8 +5,22 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./tui": {
+      "import": "./dist/tui.js",
+      "types": "./dist/tui.d.ts"
+    },
+    "./rpc": {
+      "import": "./dist/rpc.js",
+      "types": "./dist/rpc.d.ts"
+    }
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/fix-esm-imports.mjs && bun build ./src/index.ts --outfile ./dist/index.bundle.js --target bun --format esm --external 'bun:*' --external 'node:*' --external 'libsql' --external '@libsql/*' --external '@aws/*' --external '@aws-sdk/*' --external '@smithy/*' --external 'proper-lockfile'",
+    "build": "tsc -p tsconfig.build.json && node scripts/fix-esm-imports.mjs && bun build ./src/index.ts --outfile ./dist/index.bundle.js --target bun --format esm --external 'bun:*' --external 'node:*' --external 'libsql' --external '@libsql/*' --external '@aws/*' --external '@aws-sdk/*' --external '@smithy/*' --external 'proper-lockfile' --external '@opencode/*' --external '@ai-sdk/*' --external 'effect'",
     "format": "prettier --write 'src/**/*.ts'",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
@@ -32,8 +46,8 @@
     "access": "public"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "2.0.88",
     "@aws/codewhisperer-streaming-client": "^1.0.34",
-    "@opencode-ai/plugin": "^1.19.5",
     "@opencode/plugin": "^2.2.5",
     "libsql": "^0.5.29",
     "proper-lockfile": "^4.1.2",
@@ -48,13 +62,6 @@
     "prettier": "^3.4.2",
     "prettier-plugin-organize-imports": "^4.1.0",
     "typescript": "^5.7.3"
-  },
-  "opencode": {
-    "type": "plugin",
-    "hooks": [
-      "auth",
-      "event"
-    ]
   },
   "files": [
     "dist",

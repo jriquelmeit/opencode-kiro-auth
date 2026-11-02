@@ -34,8 +34,7 @@ export class RequestHandler {
   constructor(
     private accountManager: AccountManager,
     private config: KiroConfig,
-    private repository: AccountRepository,
-    private client?: any
+    private repository: AccountRepository
   ) {
     this.accountSelector = new AccountSelector(accountManager, config, syncFromKiroCli, repository)
     this.tokenRefresher = new TokenRefresher(config, accountManager, syncFromKiroCli, repository)
@@ -101,7 +100,9 @@ export class RequestHandler {
       if (this.allAccountsPermanentlyUnhealthy()) {
         const reauthed = await this.triggerReauth(showToast)
         if (!reauthed) {
-          throw new Error('All accounts are permanently unhealthy. Please re-authenticate.')
+          throw new Error(
+            'All Kiro accounts are permanently unhealthy. Run "kiro-cli login" or reconnect from /connect.'
+          )
         }
         continue
       }
@@ -357,43 +358,30 @@ export class RequestHandler {
     }
   }
 
+  /**
+   * OpenCode v2 plugins cannot start an OAuth flow on their own, so recovery means
+   * re-reading credentials that `kiro-cli login` (or /connect) wrote to disk.
+   */
   private async triggerReauth(showToast: ToastFunction): Promise<boolean> {
-    if (!this.client) return false
-
     const cooldownRemaining = REAUTH_FAILURE_COOLDOWN_MS - (Date.now() - this.lastFailedReauthAt)
-    if (cooldownRemaining > 0) {
-      showToast(
-        'Recent re-authentication failed. Please complete authentication manually.',
-        'error'
-      )
-      return false
-    }
+    if (cooldownRemaining > 0) return false
 
-    if (this.reauthInFlight) {
-      return this.reauthInFlight
-    }
+    if (this.reauthInFlight) return this.reauthInFlight
 
-    this.reauthInFlight = this.performReauth(showToast)
+    this.reauthInFlight = this.resyncAccounts(showToast)
     const success = await this.reauthInFlight.finally(() => {
       this.reauthInFlight = null
     })
-    if (!success) this.lastFailedReauthAt = Date.now()
+    if (!success) {
+      this.lastFailedReauthAt = Date.now()
+      showToast('Kiro session expired. Run "kiro-cli login" or reconnect from /connect.', 'error')
+    }
     return success
   }
 
-  private async performReauth(showToast: ToastFunction): Promise<boolean> {
+  private async resyncAccounts(showToast: ToastFunction): Promise<boolean> {
     try {
-      showToast('Session expired. Re-authenticating...', 'warning')
-      await this.client.provider.oauth.authorize({
-        path: { id: 'kiro' },
-        body: { method: 0 }
-      })
-
-      await this.client.provider.oauth.callback({
-        path: { id: 'kiro' },
-        body: { method: 0 }
-      })
-
+      await syncFromKiroCli()
       this.repository.invalidateCache()
       const accounts = await this.repository.findAll()
       for (const acc of accounts) {
@@ -401,15 +389,14 @@ export class RequestHandler {
       }
 
       if (!this.hasUsableAccount(accounts)) {
-        logger.warn('Re-auth completed but no usable Kiro account was found')
-        showToast('Re-authentication completed but no usable Kiro account was found.', 'error')
+        logger.warn('Resync completed but no usable Kiro account was found')
         return false
       }
 
-      showToast('Re-authentication successful.', 'success')
+      showToast('Kiro credentials reloaded.', 'success')
       return true
     } catch (e) {
-      logger.error('Re-auth failed', e instanceof Error ? e : new Error(String(e)))
+      logger.error('Kiro account resync failed', e instanceof Error ? e : new Error(String(e)))
       return false
     }
   }

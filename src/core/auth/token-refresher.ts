@@ -3,6 +3,7 @@ import { accessTokenExpired } from '../../kiro/auth'
 import type { AccountManager } from '../../plugin/accounts'
 import { KiroTokenRefreshError } from '../../plugin/errors'
 import * as logger from '../../plugin/logger'
+import { withRefreshLock } from '../../plugin/storage/refresh-lock'
 import { refreshAccessToken } from '../../plugin/token'
 import type { KiroAuthDetails, ManagedAccount } from '../../plugin/types'
 
@@ -63,15 +64,51 @@ export class TokenRefresher {
     }
 
     try {
-      const newAuth = await refreshAccessToken(auth)
-      this.accountManager.updateFromAuth(account, newAuth)
-      // Persist only the updated account instead of all accounts — avoids
-      // invalidating the whole AccountCache on every token refresh.
-      await this.repository.save(account)
+      await this.refreshLocked(account, auth)
       return { account, shouldContinue: false }
     } catch (e: any) {
       return await this.handleRefreshError(e, account, showToast)
     }
+  }
+
+  /**
+   * Refreshes under a cross-instance lock. The refresh token rotates on use, so
+   * after acquiring the lock the account is re-read from the DB: another opencode
+   * instance may already have refreshed it, and its token must be reused instead
+   * of replaying the old refresh token (which AWS rejects with invalid_grant).
+   */
+  private async refreshLocked(
+    account: ManagedAccount,
+    auth: KiroAuthDetails,
+    force = false
+  ): Promise<void> {
+    await withRefreshLock(account.id, async () => {
+      this.repository.invalidateCache()
+      const accounts = await this.repository.findAll()
+      const latest = accounts.find((a: ManagedAccount) => a.id === account.id)
+
+      let current = auth
+      if (latest) {
+        const latestAuth = this.accountManager.toAuthDetails(latest)
+        // A forced refresh means the server rejected a token that still looks valid,
+        // so only a token different from the rejected one counts as already refreshed.
+        const usable = force
+          ? latestAuth.access !== auth.access
+          : !accessTokenExpired(latestAuth, this.config.token_expiry_buffer_ms)
+        if (usable) {
+          this.accountManager.updateFromAuth(account, latestAuth)
+          logger.debug('refreshLocked: token already refreshed by another instance')
+          return
+        }
+        current = latestAuth
+      }
+
+      const newAuth = await refreshAccessToken(current)
+      this.accountManager.updateFromAuth(account, newAuth)
+      // Persist only the updated account instead of all accounts — avoids
+      // invalidating the whole AccountCache on every token refresh.
+      await this.repository.save(account)
+    })
   }
 
   async forceRefresh(account: ManagedAccount, auth: KiroAuthDetails): Promise<void> {
@@ -91,9 +128,7 @@ export class TokenRefresher {
     }
 
     try {
-      const newAuth = await refreshAccessToken(auth)
-      this.accountManager.updateFromAuth(account, newAuth)
-      await this.repository.batchSave(this.accountManager.getAccounts())
+      await this.refreshLocked(account, auth, true)
       logger.debug('Force refresh: token refreshed via OIDC')
     } catch (e: any) {
       logger.warn('Force refresh failed, will retry with current token', {
@@ -127,10 +162,13 @@ export class TokenRefresher {
         this.config.token_expiry_buffer_ms
       )
     ) {
+      // Keep the in-memory pool in step with the DB; otherwise the stale expired
+      // account is selected again and triggers another refresh round.
+      this.accountManager.updateFromAuth(account, this.accountManager.toAuthDetails(stillAcc))
       showToast('Credentials recovered from Kiro CLI sync.', 'info')
       // tokenRecovered=true signals the caller not to count this as a retry
       // iteration — the token is now valid and the request should proceed.
-      return { account: stillAcc, shouldContinue: true, tokenRecovered: true }
+      return { account, shouldContinue: true, tokenRecovered: true }
     }
 
     if (

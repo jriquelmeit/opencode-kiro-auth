@@ -4,272 +4,204 @@
 [![npm downloads](https://img.shields.io/npm/dm/@zhafron/opencode-kiro-auth)](https://www.npmjs.com/package/@zhafron/opencode-kiro-auth)
 [![license](https://img.shields.io/npm/l/@zhafron/opencode-kiro-auth)](https://www.npmjs.com/package/@zhafron/opencode-kiro-auth)
 
-OpenCode plugin for AWS Kiro (CodeWhisperer) providing access to Claude Sonnet and Haiku
-models with substantial trial quotas.
+OpenCode plugin for AWS Kiro (CodeWhisperer) providing access to Claude, GPT and
+open-weight models with substantial trial quotas.
+
+> **OpenCode v2 only.** This plugin uses the official `@opencode/plugin` API. It does
+> not run on OpenCode v1 and it does not open any local port or proxy.
 
 ## Features
 
-- **Multiple Auth Methods**: Supports AWS Builder ID (IDC), IAM Identity Center (custom
-  Start URL), and Kiro Desktop (CLI-based) authentication.
-- **Auto-Sync Kiro CLI**: Automatically imports and synchronizes active sessions from
-  your local `kiro-cli` SQLite database.
-- **Gradual Context Truncation**: Intelligently prevents error 400 by reducing context
-  size dynamically during retries.
-- **Intelligent Account Rotation**: Prioritizes multi-account usage based on lowest
-  available quota.
-- **High-Performance Storage**: Efficient account and usage management using native Bun
-  SQLite.
-- **Native Thinking Mode**: Streams Kiro's native reasoning to OpenCode's thinking
-  block, with the reasoning flags declared on every thinking model, so it renders
-  without any model configuration.
-- **Kiro Effort Mapping**: Maps OpenCode thinking budgets to Kiro's native effort
-  levels automatically, across the full `low`–`max` ladder.
-- **Automated Recovery**: Exponential backoff for rate limits and automated token
-  refresh.
+- **Zero-config models**: every model and its `-thinking` variants are registered by the
+  plugin. No model list is needed in `opencode.jsonc`.
+- **Native thinking**: Kiro reasoning is streamed into OpenCode's thinking block, and
+  thinking budgets are mapped to Kiro effort levels (`low` to `max`).
+- **Several auth methods**: AWS Builder ID, IAM Identity Center (Start URL and region),
+  IAM Identity Center with a Profile ARN, and import from `kiro-cli`.
+- **Safe token refresh**: Kiro refresh tokens rotate on use. A cross-process lock makes
+  sure several OpenCode windows never refresh the same token at once (which used to end
+  in `invalid_grant` and an account marked as unhealthy).
+- **Startup usage toast**: the TUI part shows your credit usage when OpenCode starts,
+  for example `Kiro usage (you@example.com): 327/2000 (16%)`.
+- **Account rotation**: `lowest-usage`, `round-robin` or `sticky`.
+- **Gradual context truncation** and **automatic retries** with backoff for rate limits.
+- **Web search**: optional `kiro_web_search` tool (needs an account with a Profile ARN).
+
+## How it works
+
+```
+OpenCode v2
+  ├─ provider.transform   registers the "kiro" provider and all models
+  ├─ aisdk hooks          give @ai-sdk/openai-compatible a custom fetch
+  │                        └─ RequestHandler → Kiro (CodeWhisperer) API
+  ├─ integration.transform adds the Kiro entry to /connect
+  ├─ tool.transform       adds kiro_web_search
+  └─ rpc (server → TUI)   usage and notices shown as toasts
+```
+
+Real tokens stay in `~/.config/opencode/kiro.db`. OpenCode's own credential store only
+keeps a placeholder (`kiro-managed`) plus the account id and email.
 
 ## Installation
 
-Add the plugin to your `opencode.json` or `opencode.jsonc`:
+Register the plugin in `~/.config/opencode/opencode.jsonc`:
 
-```json
+```jsonc
 {
-  "plugin": ["@zhafron/opencode-kiro-auth"]
+  "plugins": [
+    // From npm:
+    "@zhafron/opencode-kiro-auth"
+    // Or from a local checkout (must be a directory):
+    // { "package": "/path/to/opencode-kiro-auth" }
+  ]
 }
 ```
 
-That is the whole configuration. The plugin registers the `kiro` provider and
-advertises every model Kiro exposes, including a `-thinking` companion for each
-model that supports reasoning effort. Run `/models` to pick one.
+That is all. Do not add a `provider.kiro` block with a `baseURL`. If you have one from
+an older version that pointed to `http://127.0.0.1:40129`, remove it.
 
-Defining `provider.kiro.models` yourself replaces the plugin's registry entirely.
-Only do that to rename or restrict models, and see the reasoning flags below if
-any of them are `-thinking` models.
-
-### Thinking Effort Configuration
-
-Every effort-capable Claude model gets a `-thinking` companion, already carrying
-the reasoning flags and an effort ladder as variants. Nothing to configure: pick a
-`-thinking` model and cycle its variants to change reasoning depth.
-
-Each `-thinking` entry declares two fields that OpenCode needs in order to render
-reasoning:
-
-```json
-{
-  "reasoning": true,
-  "interleaved": { "field": "reasoning_content" }
-}
-```
-
-Both are required. `reasoning` declares the capability, and `interleaved.field`
-tells OpenCode that reasoning arrives in the non-standard `reasoning_content`
-delta this plugin emits. If either is missing, OpenCode silently drops every
-reasoning chunk and no thinking block appears.
-
-If you override `provider.kiro.models` in your own config, you replace the
-plugin's registry wholesale — copy both fields onto any `-thinking` model you
-define, or reasoning will stop rendering.
-
-Reasoning itself comes from the API: Kiro streams `reasoningContentEvent` on
-thinking models, and the plugin forwards each one as a `reasoning_content` delta.
-Nothing needs to be enabled for that. Models that instead inline reasoning as
-`<thinking>` tags in their answer are still handled, via a fallback scraper.
-
-Variants set `thinkingConfig.thinkingBudget`, which the plugin maps to Kiro's
-native `effort` field. Bands are scaled to Kiro's real thinking ceiling
-(1024-128000 on opus-4.8/opus-5), so every effort level including `xhigh` is
-reachable from a budget alone:
-
-| OpenCode budget | Kiro effort |
-| --------------- | ----------- |
-| `<= 16384` | `low` |
-| `<= 32768` | `medium` |
-| `<= 65536` | `high` |
-| `<= 98304` | `xhigh` |
-| `> 98304` | `max` |
-
-`xhigh` is only available on opus-4.7, opus-4.8, opus-5 and sonnet-5. Those models
-get a five-variant ladder; the rest get four, and a budget in the `xhigh` band is
-clamped to `max`.
-
-Kiro's GPT-5.6 tiers are not advertised. They configure reasoning through
-`reasoning.effort` / `reasoning.mode` instead of `output_config.effort`, so they
-need a separate request path.
-
-Use `~/.config/opencode/kiro.json` for plugin-wide behavior such as auth sync,
-account selection, retry limits, and `auto_effort_mapping`. A top-level `effort`
-setting is a global override for all supported models, not a per-model setting.
-
-## Setup
-
-1. **Authentication via Kiro CLI (Recommended)**:
-   - Perform login directly in your terminal using `kiro-cli login`.
-   - The plugin automatically bootstraps a minimal `kiro` placeholder in
-     OpenCode's `auth.json` when it detects the Kiro CLI database, then imports
-     and synchronizes your active session on startup.
-   - For AWS IAM Identity Center (SSO/IDC), the plugin imports both the token and device
-     registration (OIDC client credentials) from the `kiro-cli` database.
-2. **Direct Authentication**:
-   - Run `opencode auth login`.
-   - Select `Other`, type `kiro`, and press enter.
-   - You'll be prompted for your **IAM Identity Center Start URL** and **IAM Identity
-     Center region** (`sso_region`).
-     - Leave it blank to sign in with **AWS Builder ID**.
-     - Enter your company's Start URL (e.g. `https://your-company.awsapps.com/start`) to
-       use **IAM Identity Center (SSO)**.
-   - Note: the TUI `/connect` flow currently does **not** run plugin OAuth prompts
-     (Start URL / region), so Identity Center logins may fall back to Builder ID unless
-     you use `opencode auth login` (or preconfigure defaults in
-     `~/.config/opencode/kiro.json`).
-   - For **IAM Identity Center**, you may also need a **profile ARN** (`profileArn`).
-     - If `kiro-cli` is installed and you've selected a profile once
-       (`kiro-cli profile`), the plugin auto-detects it.
-     - Otherwise, set `idc_profile_arn` in `~/.config/opencode/kiro.json`.
-   - A browser window will open directly to AWS' verification URL (no local auth
-     server). If it doesn't, copy/paste the URL and enter the code printed by OpenCode.
-   - You can also pre-configure defaults in `~/.config/opencode/kiro.json` via
-     `idc_start_url` and `idc_region`.
-3. Configuration will be automatically managed at `~/.config/opencode/kiro.db`.
-
-## Local plugin development
-
-The simplest way to test local changes is to point OpenCode directly at your local repo
-path in `opencode.json` or `opencode.jsonc`:
-
-```json
-{
-  "plugin": ["/path/to/opencode-kiro-auth"]
-}
-```
-
-Then build and restart OpenCode to pick up changes:
+For a local checkout, build before first use and after every code change:
 
 ```bash
-npm run build
+bun install
+bun run build
+```
+
+Then restart OpenCode (see [Restarting OpenCode](#restarting-opencode)).
+
+## Authenticating
+
+### From OpenCode
+
+Run `/connect` (or `opencode auth login kiro`) and pick one of:
+
+| Method id  | What it does                                                          |
+| ---------- | --------------------------------------------------------------------- |
+| `idc`      | AWS Builder ID or IAM Identity Center. Blank Start URL means Builder ID. |
+| `profile`  | IAM Identity Center with a Profile ARN (`arn:aws:codewhisperer:...` or `arn:aws:qdeveloper:...`). |
+| `kiro-cli` | Runs `kiro-cli login` and imports the session.                        |
+
+### From kiro-cli
+
+```bash
+kiro-cli login
+```
+
+With `auto_sync_kiro_cli` enabled (default), the plugin imports the active kiro-cli
+session on startup and when a token is rejected.
+
+Check the result with:
+
+```bash
+opencode auth list
+opencode models | grep kiro
+```
+
+## Configuration
+
+The plugin reads, in this order (later wins):
+
+1. `~/.config/opencode/kiro.json` (user). Created with defaults on first run.
+2. `<project>/.opencode/kiro.json` (project).
+
+Example:
+
+```json
+{
+  "idc_start_url": "https://your-company.awsapps.com/start",
+  "idc_region": "us-east-1",
+  "auto_sync_kiro_cli": true,
+  "account_selection_strategy": "lowest-usage",
+  "token_expiry_buffer_ms": 120000
+}
+```
+
+| Key                          | Default        | Description                                                                 |
+| ---------------------------- | -------------- | --------------------------------------------------------------------------- |
+| `idc_start_url`              | none           | Default IAM Identity Center Start URL. Blank means Builder ID.              |
+| `idc_region`                 | none           | SSO region (`sso_region`) used for the OIDC flow.                           |
+| `idc_profile_arn`            | none           | Default Profile ARN for Identity Center accounts.                           |
+| `default_region`             | `us-east-1`    | Region of the Kiro API endpoint.                                            |
+| `account_selection_strategy` | `lowest-usage` | `sticky`, `round-robin` or `lowest-usage`.                                  |
+| `auto_sync_kiro_cli`         | `true`         | Import and refresh sessions from the local kiro-cli database.               |
+| `usage_tracking_enabled`     | `true`         | Query live credit usage (used by the startup toast).                        |
+| `token_expiry_buffer_ms`     | `300000`       | Refresh the access token this long before it expires (30000 to 300000).     |
+| `rate_limit_retry_delay_ms`  | `5000`         | Base delay between rate limit retries.                                      |
+| `rate_limit_max_retries`     | `3`            | Max rate limit retries (0 to 10).                                           |
+| `max_request_iterations`     | `30`           | Max retry/truncation iterations per request.                                |
+| `request_timeout_ms`         | `120000`       | Request timeout (30000 to 600000).                                          |
+| `usage_sync_max_retries`     | `3`            | Retries when syncing usage.                                                 |
+| `effort`                     | none           | Fixed effort for thinking models: `low`, `medium`, `high`, `xhigh`, `max`.  |
+| `auto_effort_mapping`        | `true`         | Map OpenCode thinking budgets to effort levels.                             |
+| `web_search_enabled`         | `true`         | Register `kiro_web_search` when an account has a Profile ARN.               |
+| `enable_log_api_request`     | `false`        | Log request payloads to the plugin log (verbose).                           |
+
+Changes to `kiro.json` are read when the plugin loads, so restart OpenCode after
+editing it.
+
+### Files used
+
+| Path                                       | Purpose                    |
+| ------------------------------------------ | -------------------------- |
+| `~/.config/opencode/kiro.db`               | Accounts and tokens        |
+| `~/.config/opencode/kiro.json`             | Plugin configuration       |
+| `~/.config/opencode/kiro-logs/plugin.log`  | Plugin log                 |
+
+## Restarting OpenCode
+
+OpenCode v2 runs a background service (`opencode serve --service`) that keeps plugins
+loaded. Opening another terminal does not reload them. If your changes are not picked up
+(new build, edited `kiro.json`, Kiro missing in `/connect`, old models), restart it.
+
+1. Restart the background service:
+
+   ```bash
+   opencode service restart
+   ```
+
+   Check it with `opencode service status`. If it hangs, use `opencode service stop`
+   followed by `opencode service start`.
+
+2. Close and reopen every open `opencode` TUI. Open TUIs keep the old TUI part and the
+   old connection to the server.
+
+3. Verify:
+
+   ```bash
+   opencode auth list          # Kiro (AWS CodeWhisperer) should be listed
+   opencode models | grep kiro # models should be listed
+   ```
+
+To test a build without touching the background service, run a private server:
+
+```bash
+opencode models --standalone | grep kiro
+opencode --standalone
 ```
 
 ## Troubleshooting
 
-### Error: Status: 403 (AccessDeniedException / User is not authorized)
+- **Kiro does not appear in `/connect`**: run `bun run build`, then restart the service
+  as above. Make sure `plugins` (not `plugin`) lists the package, and that a local path
+  points to a directory.
+- **No usage toast at startup**: the toast comes from the TUI part (`./tui`). Restart the
+  TUI after rebuilding. Details are in `~/.config/opencode/kiro-logs/plugin.log`.
+- **`invalid_grant` or `invalid_client`**: the stored session is no longer valid. Run
+  `kiro-cli login` (or reconnect from `/connect`) and the plugin will import it.
+- **"All Kiro accounts are permanently unhealthy"**: same fix as above.
 
-If you're using **IAM Identity Center** (a custom Start URL), the Q Developer /
-CodeWhisperer APIs typically require a **profile ARN**.
+## Development
 
-This plugin reads the active profile ARN from your local `kiro-cli` database
-(`state.key = api.codewhisperer.profile`) and sends it as `profileArn`.
-
-Fix:
-
-1. Run `kiro-cli profile` and select a profile (e.g. `QDevProfile-us-east-1`).
-2. Retry `opencode auth login` (or restart OpenCode so it re-syncs).
-
-### Error: No accounts
-
-This happens when the plugin has no records in `~/.config/opencode/kiro.db`.
-
-1. Ensure `kiro-cli login` succeeds.
-2. Ensure `auto_sync_kiro_cli` is `true` in `~/.config/opencode/kiro.json`.
-3. Retry the request; the plugin will attempt a Kiro CLI sync when it detects zero
-   accounts.
-
-### Note: `/connect` vs `opencode auth login`
-
-If you need to enter provider-specific values for an OAuth login (like IAM Identity
-Center Start URL / region), use `opencode auth login`. The current TUI `/connect` flow
-may not display plugin OAuth prompts, so it can’t collect those inputs.
-
-Note for IDC/SSO (ODIC): the plugin may temporarily create an account with a placeholder
-email if it cannot fetch the real email during sync (e.g. offline).
-It will replace it with the real email once usage/email lookup succeeds.
-
-### Kiro CLI (Google/GitHub OAuth) users: plugin sync does not start
-
-If you authenticated via `kiro-cli login` using Google or GitHub OAuth (not AWS Builder
-ID or IAM Identity Center), OpenCode still needs a stored `kiro` auth entry before it
-will call the plugin loader.
-
-The plugin now creates that minimal placeholder automatically when it detects the local
-Kiro CLI database. Restart OpenCode after `kiro-cli login`; the loader should then run
-and sync your actual tokens into `kiro.db`. The placeholder values are not used for API
-calls.
-
-If bootstrap is skipped because `auth.json` is malformed, fix the JSON first. The plugin
-will not overwrite malformed auth files because they may contain other provider
-credentials.
-
-**Important:** Ensure `auto_sync_kiro_cli` is `true` in `~/.config/opencode/kiro.json`
-and that `kiro-cli login` succeeds.
-
-The plugin supports extensive configuration options.
-Edit `~/.config/opencode/kiro.json`:
-
-```json
-{
-  "auto_sync_kiro_cli": true,
-  "account_selection_strategy": "lowest-usage",
-  "default_region": "us-east-1",
-  "idc_start_url": "https://your-company.awsapps.com/start",
-  "idc_region": "us-east-1",
-  "rate_limit_retry_delay_ms": 5000,
-  "rate_limit_max_retries": 3,
-  "max_request_iterations": 20,
-  "request_timeout_ms": 120000,
-  "token_expiry_buffer_ms": 120000,
-  "usage_sync_max_retries": 3,
-  "usage_tracking_enabled": true,
-  "auto_effort_mapping": true,
-  "enable_log_api_request": false
-}
+```bash
+bun install
+bun run typecheck
+bun test
+bun run build
 ```
 
-### Configuration Options
+`dist/` is generated and not committed. The build keeps `@opencode/*`, `@ai-sdk/*` and
+`effect` external so the plugin uses the host's copies.
 
-- `auto_sync_kiro_cli`: Automatically sync sessions from Kiro CLI (default: `true`).
-- `account_selection_strategy`: Account rotation strategy (`sticky`, `round-robin`,
-  `lowest-usage`).
-- `default_region`: AWS region (`us-east-1`, `us-west-2`).
-- `idc_start_url`: Default IAM Identity Center Start URL (e.g.
-  `https://your-company.awsapps.com/start`). Leave unset/blank to default to AWS Builder
-  ID.
-- `idc_region`: IAM Identity Center (SSO OIDC) region (`sso_region`). Defaults to
-  `us-east-1`.
-- `rate_limit_retry_delay_ms`: Delay between rate limit retries (1000-60000ms).
-- `rate_limit_max_retries`: Maximum retry attempts for rate limits (0-10).
-- `max_request_iterations`: Maximum loop iterations to prevent hangs (10-1000).
-- `request_timeout_ms`: Request timeout in milliseconds (60000-600000ms).
-- `token_expiry_buffer_ms`: Token refresh buffer time (30000-300000ms).
-- `usage_sync_max_retries`: Retry attempts for usage sync (0-5).
-- `auth_server_port_start`: Legacy/ignored (no local auth server).
-- `auth_server_port_range`: Legacy/ignored (no local auth server).
-- `usage_tracking_enabled`: Enable usage tracking and toast notifications.
-- `auto_effort_mapping`: Automatically map OpenCode thinking budgets to Kiro effort
-  levels for supported models (default: `true`).
-- `enable_log_api_request`: Enable detailed API request logging. Request logs
-  include the resolved `additionalModelRequestFields`, so this is how you confirm
-  which effort level actually went out on the wire.
+## License
 
-## Storage
-
-**Linux/macOS:**
-
-- SQLite Database: `~/.config/opencode/kiro.db`
-- Plugin Config: `~/.config/opencode/kiro.json`
-
-**Windows:**
-
-- SQLite Database: `%APPDATA%\opencode\kiro.db`
-- Plugin Config: `%APPDATA%\opencode\kiro.json`
-
-## Acknowledgements
-
-Special thanks to [AIClient-2-API](https://github.com/justlovemaki/AIClient-2-API) for
-providing the foundational Kiro authentication logic and request patterns.
-
-## Disclaimer
-
-This plugin is provided strictly for learning and educational purposes.
-It is an independent implementation and is not affiliated with, endorsed by, or
-supported by Amazon Web Services (AWS) or Anthropic.
-Use of this plugin is at your own risk.
-
-Feel free to open a PR to optimize this plugin further.
+MIT

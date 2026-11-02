@@ -132,4 +132,16 @@ describe('AuthHandler.refreshUsageFromApi', () => {
       globalThis.fetch = original
     }
   })
+
+  test('getUsageMessages formats account quota summaries', () => {
+    const acc = makeAccount({ email: 'user@example.com', usedCount: 150, limitCount: 2000 })
+    const handler = new AuthHandler({}, fakeRepo)
+    handler.setAccountManager(makeManager(acc))
+
+    const msgs = handler.getUsageMessages()
+    expect(msgs.length).toBe(1)
+    expect(msgs[0]?.message).toContain('user@example.com')
+    expect(msgs[0]?.message).toContain('150/2000')
+    expect(msgs[0]?.variant).toBe('info')
+  })
 })

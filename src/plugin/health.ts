@@ -4,6 +4,10 @@ export function isPermanentError(reason?: string): boolean {
     reason.includes('Invalid refresh token') ||
     reason.includes('Invalid grant provided') ||
     reason.includes('invalid_grant') ||
+    reason.includes('InvalidGrantException') ||
+    reason.includes('invalid_request') ||
+    reason.includes('InvalidRequestException') ||
+    reason.includes('Invalid request') ||
     reason.includes('ExpiredTokenException') ||
     reason.includes('InvalidTokenException') ||
     reason.includes('ExpiredClientException') ||

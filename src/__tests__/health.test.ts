@@ -30,6 +30,12 @@ describe('isPermanentError', () => {
     expect(isPermanentError('error: invalid_grant')).toBe(true)
   })
 
+  test('detects invalid_request / Invalid request (expired SSO session)', () => {
+    expect(isPermanentError('invalid_request')).toBe(true)
+    expect(isPermanentError('InvalidRequestException')).toBe(true)
+    expect(isPermanentError('Refresh failed: Invalid request')).toBe(true)
+  })
+
   test('detects ExpiredTokenException', () => {
     expect(isPermanentError('ExpiredTokenException')).toBe(true)
     expect(isPermanentError('AWS: ExpiredTokenException: token expired')).toBe(true)

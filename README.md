@@ -18,9 +18,11 @@ open-weight models with substantial trial quotas.
   thinking budgets are mapped to Kiro effort levels (`low` to `max`).
 - **Several auth methods**: AWS Builder ID, IAM Identity Center (Start URL and region),
   IAM Identity Center with a Profile ARN, and import from `kiro-cli`.
-- **Safe token refresh**: Kiro refresh tokens rotate on use. A cross-process lock makes
-  sure several OpenCode windows never refresh the same token at once (which used to end
-  in `invalid_grant` and an account marked as unhealthy).
+- **Safe token refresh & automatic session recovery**: Kiro refresh tokens rotate on use.
+  A cross-process lock makes sure several OpenCode windows never refresh the same token at
+  once (which used to end in `invalid_grant` and an account marked as unhealthy). When AWS
+  SSO / Builder ID sessions reach their 8-hour lifetime limit (`invalid_request`), the
+  plugin automatically launches browser re-authentication without interrupting your workflow.
 - **Startup usage toast**: the TUI part shows your credit usage when OpenCode starts,
   for example `Kiro usage (you@example.com): 327/2000 (16%)`.
 - **Account rotation**: `lowest-usage`, `round-robin` or `sticky`.
@@ -186,8 +188,9 @@ opencode --standalone
   points to a directory.
 - **No usage toast at startup**: the toast comes from the TUI part (`./tui`). Restart the
   TUI after rebuilding. Details are in `~/.config/opencode/kiro-logs/plugin.log`.
-- **`invalid_grant` or `invalid_client`**: the stored session is no longer valid. Run
-  `kiro-cli login` (or reconnect from `/connect`) and the plugin will import it.
+- **`invalid_grant`, `invalid_client` or `invalid_request: Invalid request`**: AWS SSO
+  / Builder ID sessions expire after 8 hours. The plugin will automatically open the browser
+  to re-authenticate; you can also run `kiro-cli login` or reconnect via `/connect`.
 - **"All Kiro accounts are permanently unhealthy"**: same fix as above.
 
 ## Development

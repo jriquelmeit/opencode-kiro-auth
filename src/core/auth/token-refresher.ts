@@ -176,11 +176,17 @@ export class TokenRefresher {
       (error.code === 'ExpiredTokenException' ||
         error.code === 'InvalidTokenException' ||
         error.code === 'ExpiredClientException' ||
+        error.code === 'InvalidRequestException' ||
+        error.code === 'InvalidGrantException' ||
+        error.code === 'invalid_request' ||
+        error.code === 'invalid_grant' ||
+        error.code === 'HTTP_400' ||
         error.code === 'HTTP_401' ||
         error.code === 'HTTP_403' ||
         error.code === 'invalid_client' ||
         error.message.includes('Invalid refresh token provided') ||
         error.message.includes('Invalid grant provided') ||
+        error.message.includes('Invalid request') ||
         error.message.includes('Client is expired'))
     ) {
       this.accountManager.markUnhealthy(account, error.code || error.message)
